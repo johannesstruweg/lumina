@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Camera, Share2, Download, RefreshCw, Play, Pause, Loader2, X, Instagram, Zap } from 'lucide-react';
 
 // --- API Configuration ---
-// Switched to Environment Variable for security
+// Uses Vite env variable. Ensure .env file has VITE_GEMINI_API_KEY=AIza...
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
 
 // --- Helper: Convert File to Base64 ---
@@ -25,7 +25,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
   
   const fullPrompt = `
-    Transform this person into a high-fashion editorial shoot.
+    Transform this person into a high-fashion editorial magazine shot.
     Style: Vogue-style photography, 8k resolution, dramatic studio lighting, photorealistic, sharp focus.
     Pose: ${posePrompt}
     Keep the person's facial features recognizable but stylized.
@@ -70,7 +70,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
 const POSES = [
   "Close-up beauty shot, hands framing the face, intense gaze, soft lighting.",
   "Full body power pose, walking towards camera, wind in hair, low angle shot.",
-  "Side profile silhouette, dramatic rim lighting, moody atmosphere, looking away.",
+  "Side profile silhouette, soft rim lighting, moody atmosphere, looking away.",
   "Sitting on a high stool, chic and relaxed, fashion week street style, confident smile."
 ];
 
@@ -130,107 +130,135 @@ export default function LuminaApp() {
 
     setGeneratedImages(results);
     setLoadingProgress(100);
-    generateGlamCamVideo(results);
+    
+    // Pass only the first image to the video generator
+    if (results.length > 0) {
+      generateGlamCamVideo(results[0]); 
+    }
     setStep('results');
   };
 
-  const generateGlamCamVideo = async (images) => {
+  const generateGlamCamVideo = async (imageSrc) => {
     setIsVideoGenerating(true);
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const width = 720;
-    const height = 1280; 
-    canvas.width = width;
-    canvas.height = height;
-
-    const imageElements = await Promise.all(images.map(src => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => resolve(img);
-        img.src = src;
-      });
-    }));
-
-    const stream = canvas.captureStream(30);
-    const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
-    const chunks = [];
     
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
+    try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 720;
+        const height = 1280; 
+        canvas.width = width;
+        canvas.height = height;
 
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      setVideoUrl(url);
-      setIsVideoGenerating(false);
-    };
+        // Load the single image
+        const img = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.crossOrigin = "anonymous";
+          image.onload = () => resolve(image);
+          image.onerror = (e) => reject(e);
+          image.src = imageSrc;
+        });
 
-    mediaRecorder.start();
+        // --- Browser Compatibility Check for Video ---
+        const mimeTypes = [
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm',
+            'video/mp4' // Safari fallbacks
+        ];
+        const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'video/webm';
 
-    const durationPerImage = 60; 
-    const totalFrames = durationPerImage * imageElements.length;
-    let frame = 0;
-
-    const animate = () => {
-      if (frame >= totalFrames) {
-        mediaRecorder.stop();
-        return;
-      }
-
-      const imgIndex = Math.floor(frame / durationPerImage);
-      const localFrame = frame % durationPerImage;
-      const currentImg = imageElements[imgIndex];
-
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, width, height);
-
-      if (currentImg) {
-        const maxScale = 1.2;
-        const scale = 1.0 + (0.2 * (localFrame / durationPerImage));
+        const stream = canvas.captureStream(30); // 30 FPS
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
+        const chunks = [];
         
-        const imgAspect = currentImg.width / currentImg.height;
-        const canvasAspect = width / height;
-        let drawW, drawH, offsetX, offsetY;
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
 
-        if (imgAspect > canvasAspect) {
-          drawH = height * scale;
-          drawW = drawH * imgAspect;
-          offsetX = (width - drawW) / 2;
-          offsetY = (height - drawH) / 2;
-        } else {
-          drawW = width * scale;
-          drawH = drawW / imgAspect;
-          offsetX = (width - drawW) / 2;
-          offsetY = (height - drawH) / 2;
-        }
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: selectedMimeType });
+          const url = URL.createObjectURL(blob);
+          setVideoUrl(url);
+          setIsVideoGenerating(false);
+        };
 
-        ctx.drawImage(currentImg, offsetX, offsetY, drawW, drawH);
+        mediaRecorder.start();
 
-        if (localFrame < 5) {
-            ctx.fillStyle = `rgba(255, 255, 255, ${1 - (localFrame/5)})`;
-            ctx.fillRect(0,0, width, height);
-        }
-        
-        ctx.font = '700 40px serif';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-        ctx.textAlign = 'center';
-        ctx.fillText('LUMINA', width / 2, height - 100);
-      }
+        // Animation Constants for SINGLE IMAGE
+        const fps = 30;
+        const durationSeconds = 4; 
+        const totalFrames = fps * durationSeconds;
+        let frame = 0;
 
-      frame++;
-      requestAnimationFrame(animate);
-    };
+        const animate = () => {
+          if (frame >= totalFrames) {
+            mediaRecorder.stop();
+            return;
+          }
 
-    animate();
+          // Clear
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, width, height);
+
+          // --- Single Image Ken Burns Logic ---
+          // Progress 0.0 to 1.0
+          const progress = frame / totalFrames;
+          
+          // Smooth Zoom: Start at 1.0, end at 1.15
+          const scale = 1.0 + (0.15 * progress);
+          
+          // Gentle Pan: Shift slightly from center
+          // panX goes from 0 to -20px
+          const panX = -20 * progress;
+
+          const imgAspect = img.width / img.height;
+          const canvasAspect = width / height;
+          let drawW, drawH, offsetX, offsetY;
+
+          // Calculate "Cover" fit
+          if (imgAspect > canvasAspect) {
+            drawH = height * scale;
+            drawW = drawH * imgAspect;
+            offsetX = (width - drawW) / 2 + panX; // Apply pan
+            offsetY = (height - drawH) / 2;
+          } else {
+            drawW = width * scale;
+            drawH = drawW / imgAspect;
+            offsetX = (width - drawW) / 2 + panX;
+            offsetY = (height - drawH) / 2;
+          }
+
+          ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+
+          // Flash effect only at the very start
+          if (frame < 5) {
+              ctx.fillStyle = `rgba(255, 255, 255, ${1 - (frame/5)})`;
+              ctx.fillRect(0,0, width, height);
+          }
+          
+          // Watermark
+          ctx.font = '700 40px serif';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+          ctx.textAlign = 'center';
+          ctx.fillText('LUMINA', width / 2, height - 100);
+
+          frame++;
+          requestAnimationFrame(animate);
+        };
+
+        animate();
+    } catch (err) {
+        console.error("Video generation error:", err);
+        setErrorMsg("Could not generate video on this device.");
+        setIsVideoGenerating(false);
+    }
   };
 
   const handleDownloadVideo = () => {
     if (!videoUrl) return;
     const a = document.createElement('a');
     a.href = videoUrl;
-    a.download = 'lumina-glamcam.webm';
+    a.download = 'lumina-glamcam.webm'; // Note: extension might vary if we used mp4, but webm usually plays in players
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -249,7 +277,10 @@ export default function LuminaApp() {
     if (navigator.share && videoUrl) {
       try {
         const blob = await fetch(videoUrl).then(r => r.blob());
-        const file = new File([blob], 'lumina-glamcam.webm', { type: 'video/webm' });
+        // Attempt to detect type for file extension
+        const type = blob.type.includes('mp4') ? 'mp4' : 'webm';
+        const file = new File([blob], `lumina-glamcam.${type}`, { type: blob.type });
+        
         await navigator.share({
           title: 'My LUMINA Edit',
           text: 'Check out my AI-generated fashion shoot!',
@@ -409,7 +440,7 @@ export default function LuminaApp() {
                       </button>
                     </div>
                     <div className="absolute bottom-2 right-2 px-2 py-1 bg-black/50 backdrop-blur-md rounded text-[10px] uppercase tracking-wider text-white/80">
-                      Print 0{idx+1}
+                      0{idx+1}
                     </div>
                   </div>
                 ))}
