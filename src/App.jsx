@@ -400,7 +400,7 @@ export default function LuminaApp() {
               </span>
             </h1>
             <p className="text-zinc-400 mb-12 max-w-md text-lg">
-              Upload a selfie. Our AI will style you into a high-fashion photoshoot and generate a dynamic moving video.
+              Upload a selfie. We'll style you into a high-fashion photoshoot with 4 stills, and one dynamic image.
               <br/>
               <span className='text-xs text-zinc-500 mt-2 block'>
                 (Optimized for speed: Your input image will be resized before AI processing.)
@@ -432,7 +432,7 @@ export default function LuminaApp() {
               ></div>
             </div>
             <h2 className="text-2xl font-serif font-bold mb-2">Developing Films</h2>
-            <p className="text-zinc-400 animate-pulse">Running 4 parallel image generations...</p>
+            <p className="text-zinc-400 animate-pulse">Developing images...</p>
             
             <div className="w-full max-w-xs mt-8 bg-zinc-900 h-1 rounded-full overflow-hidden">
               <div 
@@ -533,7 +533,7 @@ export default function LuminaApp() {
 
       {/* Footer */}
       <footer className="py-8 text-center text-zinc-600 text-sm">
-        <p>POWERED BY GEMINI 2.5 • LUMINA STUDIOS © 2025</p>
+        <p>POWERED BY GEMINI • LUMINA by stratagentic.ai © 2025</p>
       </footer>
     </div>
   );
