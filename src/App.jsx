@@ -25,7 +25,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
   
   const fullPrompt = `
-    Transform this person into a high-fashion editorial magazine shot.
+    Transform this person into a high-fashion editorial shoot.
     Style: Vogue-style photography, 8k resolution, dramatic studio lighting, photorealistic, sharp focus.
     Pose: ${posePrompt}
     Keep the person's facial features recognizable but stylized.
