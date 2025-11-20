@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Camera, Share2, Download, RefreshCw, Play, Pause, Loader2, X, Instagram, Zap } from 'lucide-react';
 
 // --- API Configuration ---
-// Uses Vite env variable. Ensure .env file has VITE_GEMINI_API_KEY=AIza...
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
 
 // --- Helper: Convert File to Base64 ---
@@ -15,7 +14,7 @@ const fileToBase64 = (file) => {
   });
 };
 
-// --- Helper: Gemini Image Generation ---
+// --- Helper: Gemini Image Generation (UPDATED - NO TEXT) ---
 const generateEditorialImage = async (base64Image, posePrompt) => {
   if (!apiKey) {
     console.error("API Key missing. Please check .env file.");
@@ -30,6 +29,9 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
     Pose: ${posePrompt}
     Keep the person's facial features recognizable but stylized.
     Background: Minimalist luxury studio or blurred city bokeh.
+    
+    CRITICAL: Generate ONLY the photograph with NO text, NO watermarks, NO labels, NO words anywhere in the image.
+    The image should be a pure fashion photograph without any text overlays.
   `;
 
   const payload = {
@@ -66,6 +68,59 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
   }
 };
 
+// --- Helper: Gemini VIDEO Generation (NEW - ACTUAL VIDEO) ---
+const generateEditorialVideo = async (base64Image) => {
+  if (!apiKey) {
+    throw new Error("API Key missing");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+  
+  const videoPrompt = `
+    Create a 4-second cinematic fashion video of this person.
+    Style: High-fashion runway video, smooth camera movement, professional lighting.
+    Motion: The model should move naturally - subtle head turn, hair movement, slight body sway, confident pose transitions.
+    Camera: Smooth slow zoom in, slight parallax effect, cinematic framing.
+    Keep the person recognizable and make the movement elegant and editorial.
+    Background: Luxury studio with soft lighting or elegant minimalist setting.
+    
+    CRITICAL: Generate ONLY the video with NO text, NO watermarks, NO labels, NO words anywhere in the video.
+  `;
+
+  const payload = {
+    contents: [{
+      parts: [
+        { text: videoPrompt },
+        { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+      ]
+    }],
+    generationConfig: {
+      responseModalities: ['VIDEO'],
+      temperature: 0.9 
+    }
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+    
+    const data = await response.json();
+    const videoBase64 = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+    
+    if (!videoBase64) throw new Error("No video generated");
+    
+    return `data:video/mp4;base64,${videoBase64}`;
+  } catch (error) {
+    console.error("Video generation failed:", error);
+    return null;
+  }
+};
+
 // --- Styles & Poses ---
 const POSES = [
   "Close-up beauty shot, hands framing the face, intense gaze, soft lighting.",
@@ -76,15 +131,13 @@ const POSES = [
 
 // --- Main Component ---
 export default function LuminaApp() {
-  const [step, setStep] = useState('upload'); // upload, processing, results
+  const [step, setStep] = useState('upload');
   const [originalImage, setOriginalImage] = useState(null);
   const [generatedImages, setGeneratedImages] = useState([]);
   const [videoUrl, setVideoUrl] = useState(null);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [isVideoGenerating, setIsVideoGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
-
-  // --- Handlers ---
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -131,126 +184,29 @@ export default function LuminaApp() {
     setGeneratedImages(results);
     setLoadingProgress(100);
     
-    // Pass only the first image to the video generator
-    if (results.length > 0) {
-      generateGlamCamVideo(results[0]); 
-    }
+    // Generate actual video using Gemini's video generation
+    generateGlamCamVideo(base64Input);
     setStep('results');
   };
 
-  const generateGlamCamVideo = async (imageSrc) => {
+  // UPDATED: Now uses Gemini to generate actual video with movement
+  const generateGlamCamVideo = async (base64Input) => {
     setIsVideoGenerating(true);
     
     try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        const width = 720;
-        const height = 1280; 
-        canvas.width = width;
-        canvas.height = height;
-
-        // Load the single image
-        const img = await new Promise((resolve, reject) => {
-          const image = new Image();
-          image.crossOrigin = "anonymous";
-          image.onload = () => resolve(image);
-          image.onerror = (e) => reject(e);
-          image.src = imageSrc;
-        });
-
-        // --- Browser Compatibility Check for Video ---
-        const mimeTypes = [
-            'video/webm;codecs=vp9',
-            'video/webm;codecs=vp8',
-            'video/webm',
-            'video/mp4' // Safari fallbacks
-        ];
-        const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'video/webm';
-
-        const stream = canvas.captureStream(30); // 30 FPS
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
-        const chunks = [];
-        
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunks.push(e.data);
-        };
-
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(chunks, { type: selectedMimeType });
-          const url = URL.createObjectURL(blob);
-          setVideoUrl(url);
-          setIsVideoGenerating(false);
-        };
-
-        mediaRecorder.start();
-
-        // Animation Constants for SINGLE IMAGE
-        const fps = 30;
-        const durationSeconds = 4; 
-        const totalFrames = fps * durationSeconds;
-        let frame = 0;
-
-        const animate = () => {
-          if (frame >= totalFrames) {
-            mediaRecorder.stop();
-            return;
-          }
-
-          // Clear
-          ctx.fillStyle = '#000';
-          ctx.fillRect(0, 0, width, height);
-
-          // --- Single Image Ken Burns Logic ---
-          // Progress 0.0 to 1.0
-          const progress = frame / totalFrames;
-          
-          // Smooth Zoom: Start at 1.0, end at 1.15
-          const scale = 1.0 + (0.15 * progress);
-          
-          // Gentle Pan: Shift slightly from center
-          // panX goes from 0 to -20px
-          const panX = -20 * progress;
-
-          const imgAspect = img.width / img.height;
-          const canvasAspect = width / height;
-          let drawW, drawH, offsetX, offsetY;
-
-          // Calculate "Cover" fit
-          if (imgAspect > canvasAspect) {
-            drawH = height * scale;
-            drawW = drawH * imgAspect;
-            offsetX = (width - drawW) / 2 + panX; // Apply pan
-            offsetY = (height - drawH) / 2;
-          } else {
-            drawW = width * scale;
-            drawH = drawW / imgAspect;
-            offsetX = (width - drawW) / 2 + panX;
-            offsetY = (height - drawH) / 2;
-          }
-
-          ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
-
-          // Flash effect only at the very start
-          if (frame < 5) {
-              ctx.fillStyle = `rgba(255, 255, 255, ${1 - (frame/5)})`;
-              ctx.fillRect(0,0, width, height);
-          }
-          
-          // Watermark
-          ctx.font = '700 40px serif';
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-          ctx.textAlign = 'center';
-          ctx.fillText('LUMINA', width / 2, height - 100);
-
-          frame++;
-          requestAnimationFrame(animate);
-        };
-
-        animate();
+      const videoData = await generateEditorialVideo(base64Input);
+      
+      if (videoData) {
+        setVideoUrl(videoData);
+      } else {
+        setErrorMsg("Could not generate video. The feature may not be available yet.");
+      }
+      
+      setIsVideoGenerating(false);
     } catch (err) {
-        console.error("Video generation error:", err);
-        setErrorMsg("Could not generate video on this device.");
-        setIsVideoGenerating(false);
+      console.error("Video generation error:", err);
+      setErrorMsg("Video generation is not yet available in Gemini API.");
+      setIsVideoGenerating(false);
     }
   };
 
@@ -258,7 +214,7 @@ export default function LuminaApp() {
     if (!videoUrl) return;
     const a = document.createElement('a');
     a.href = videoUrl;
-    a.download = 'lumina-glamcam.webm'; // Note: extension might vary if we used mp4, but webm usually plays in players
+    a.download = 'lumina-glamcam.mp4';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -277,9 +233,7 @@ export default function LuminaApp() {
     if (navigator.share && videoUrl) {
       try {
         const blob = await fetch(videoUrl).then(r => r.blob());
-        // Attempt to detect type for file extension
-        const type = blob.type.includes('mp4') ? 'mp4' : 'webm';
-        const file = new File([blob], `lumina-glamcam.${type}`, { type: blob.type });
+        const file = new File([blob], 'lumina-glamcam.mp4', { type: 'video/mp4' });
         
         await navigator.share({
           title: 'My LUMINA Edit',
@@ -398,7 +352,7 @@ export default function LuminaApp() {
                 ) : (
                   <div className="text-zinc-500 flex flex-col items-center">
                     <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                    <p>Rendering GlamCam...</p>
+                    <p>Generating video with AI...</p>
                   </div>
                 )}
               </div>
