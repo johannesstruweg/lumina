@@ -4,7 +4,7 @@ import { Upload, Camera, Share2, Download, RefreshCw, Play, Pause, Loader2, X, I
 // --- API Configuration ---
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
 
-// --- Helper: Convert File to Base64 ---
+// --- Helper: Convert File to Base64 (Retained for display) ---
 const fileToBase64 = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -14,7 +14,49 @@ const fileToBase64 = (file) => {
   });
 };
 
-// --- Helper: Gemini Image Generation (NO TEXT) ---
+// --- NEW Helper: Resize Image Client-Side (Optimization 1: Input) ---
+// Resizes image to 1024px maximum width/height while maintaining aspect ratio,
+// and outputs a Base64 string.
+const resizeImage = (file) => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_SIZE = 1024; // Target max size for speed
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_SIZE) {
+            height *= MAX_SIZE / width;
+            width = MAX_SIZE;
+          }
+        } else {
+          if (height > MAX_SIZE) {
+            width *= MAX_SIZE / height;
+            height = MAX_SIZE;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to JPEG with moderate compression (0.7 quality)
+        const resizedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        resolve(resizedDataUrl.split(',')[1]); // Resolve with Base64 data only
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+
+// --- Helper: Gemini Image Generation (Optimization 2: Prompt) ---
 const generateEditorialImage = async (base64Image, posePrompt) => {
   if (!apiKey) {
     console.error("API Key missing. Please check .env file.");
@@ -23,12 +65,13 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
   
+  // OPTIMIZATION: Simplified prompt for faster generation time (removed '8k resolution', 'dramatic studio lighting')
   const fullPrompt = `
     Transform this person into a high-fashion editorial magazine shot.
-    Style: Vogue-style photography, 8k resolution, dramatic studio lighting, photorealistic, sharp focus.
+    Style: Vogue cover aesthetic, high detail, photorealistic.
     Pose: ${posePrompt}
     Keep the person's facial features recognizable but stylized.
-    Background: Minimalist luxury studio or blurred city bokeh.
+    Background: Clean minimalist studio or blurred bokeh.
     
     CRITICAL: Generate ONLY the photograph with NO text, NO watermarks, NO labels, NO words anywhere in the image.
     The image should be a pure fashion photograph without any text overlays.
@@ -43,7 +86,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
     }],
     generationConfig: {
       responseModalities: ['IMAGE'],
-      temperature: 0.9 
+      temperature: 0.8 // Slightly lower temperature for consistency/speed
     }
   };
 
@@ -70,7 +113,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
     return `data:image/jpeg;base64,${imageBase64}`;
   } catch (error) {
     console.error("Generation failed:", error);
-    throw error; // Re-throw to handle in the calling function
+    throw error;
   }
 };
 
@@ -89,6 +132,7 @@ export default function LuminaApp() {
   const [generatedImages, setGeneratedImages] = useState([]);
   const [videoUrl, setVideoUrl] = useState(null);
   const [loadingProgress, setLoadingProgress] = useState(0);
+  const [renderingProgress, setRenderingProgress] = useState(0); // Added for detailed video feedback
   const [isVideoGenerating, setIsVideoGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -101,10 +145,16 @@ export default function LuminaApp() {
       return;
     }
 
-    const base64 = await fileToBase64(file);
-    setOriginalImage(base64);
+    // Optimization 1: Resize and compress input image
+    setLoadingProgress(5);
+    const resizedBase64 = await resizeImage(file);
+    
+    // Display the original file locally but process the resized one
+    const originalBase64 = await fileToBase64(file);
+    setOriginalImage(originalBase64);
+    
     setStep('processing');
-    processImages(base64);
+    processImages(resizedBase64);
   };
 
   const processImages = async (base64Input) => {
@@ -114,25 +164,27 @@ export default function LuminaApp() {
        return;
     }
     
-    setLoadingProgress(5);
-    const results = [];
-    const progressPerImage = 90 / POSES.length; // 90% for images, 10% for video prep
+    setLoadingProgress(10);
+    const progressPerImage = 90 / POSES.length; 
     
-    // Generate all 4 images
-    for (let i = 0; i < POSES.length; i++) {
-      try {
-        console.log(`Generating image ${i + 1} of ${POSES.length}...`);
-        const result = await generateEditorialImage(base64Input, POSES[i]);
-        if (result) {
-          results.push(result);
-          console.log(`Image ${i + 1} generated successfully`);
-        }
-        setLoadingProgress((prev) => Math.min(prev + progressPerImage, 95));
-      } catch (err) {
-        console.error(`Failed to generate image ${i + 1}:`, err);
-        // Continue with other images even if one fails
-      }
-    }
+    // Optimization 3: Parallelization using Promise.all
+    const generationPromises = POSES.map((pose) => 
+        (async () => {
+            try {
+                const result = await generateEditorialImage(base64Input, pose);
+                // Update progress after completion
+                setLoadingProgress(prev => Math.min(prev + progressPerImage, 95));
+                return result;
+            } catch (err) {
+                console.error(`Failed to generate image for pose: ${pose}`, err);
+                // Still update progress even if it fails, to prevent a stuck loading bar
+                setLoadingProgress(prev => Math.min(prev + progressPerImage, 95));
+                return null;
+            }
+        })()
+    );
+
+    const results = (await Promise.all(generationPromises)).filter(result => result !== null);
 
     if (results.length === 0) {
       setErrorMsg("Failed to generate any images. Please try again.");
@@ -140,50 +192,57 @@ export default function LuminaApp() {
       return;
     }
 
-    console.log(`Successfully generated ${results.length} of ${POSES.length} images`);
-    
     setGeneratedImages(results);
     setLoadingProgress(100);
     
     // Generate video using the first image
     if (results.length > 0) {
-      generateGlamCamVideo(results[0]);
+      setTimeout(() => generateGlamCamVideo(results[0]), 500);
     }
     setStep('results');
   };
 
-  // UPDATED: Ken Burns effect WITHOUT watermark
+  // Re-injecting robust video logic (with progress and browser compatibility)
   const generateGlamCamVideo = async (imageSrc) => {
     setIsVideoGenerating(true);
+    setRenderingProgress(0);
     
     try {
+        // 1. Setup Canvas
         const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { alpha: false }); 
         const width = 720;
         const height = 1280; 
         canvas.width = width;
         canvas.height = height;
 
-        // Load the single image
+        // 2. Load Image
         const img = await new Promise((resolve, reject) => {
           const image = new Image();
-          image.crossOrigin = "anonymous";
+          image.crossOrigin = "anonymous"; 
           image.onload = () => resolve(image);
           image.onerror = (e) => reject(e);
           image.src = imageSrc;
         });
 
-        // Browser Compatibility Check for Video
-        const mimeTypes = [
-            'video/webm;codecs=vp9',
-            'video/webm;codecs=vp8',
-            'video/webm',
-            'video/mp4'
+        // 3. Detect Supported Mime Type (Crucial for cross-browser stability)
+        const types = [
+          "video/mp4",
+          "video/webm;codecs=vp9", 
+          "video/webm;codecs=vp8", 
+          "video/webm;codecs=h264", 
+          "video/webm"
         ];
-        const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'video/webm';
+        const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || "";
+        
+        if (!mimeType) {
+           console.warn("No supported video mime type found. Trying default.");
+        }
 
+        // 4. Setup Recorder
         const stream = canvas.captureStream(30); // 30 FPS
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
+        const options = mimeType ? { mimeType } : undefined;
+        const mediaRecorder = new MediaRecorder(stream, options);
         const chunks = [];
         
         mediaRecorder.ondataavailable = (e) => {
@@ -191,17 +250,18 @@ export default function LuminaApp() {
         };
 
         mediaRecorder.onstop = () => {
-          const blob = new Blob(chunks, { type: selectedMimeType });
+          const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
           const url = URL.createObjectURL(blob);
           setVideoUrl(url);
           setIsVideoGenerating(false);
+          setRenderingProgress(100);
         };
 
+        // 5. Start Animation Loop
         mediaRecorder.start();
 
-        // Animation Constants for SINGLE IMAGE
         const fps = 30;
-        const durationSeconds = 4; 
+        const durationSeconds = 3; 
         const totalFrames = fps * durationSeconds;
         let frame = 0;
 
@@ -211,54 +271,52 @@ export default function LuminaApp() {
             return;
           }
 
-          // Clear
+          // Update Progress UI
+          setRenderingProgress(Math.round((frame / totalFrames) * 100));
+
+          // --- Render Logic (Slow Motion / Ken Burns) ---
           ctx.fillStyle = '#000';
           ctx.fillRect(0, 0, width, height);
 
-          // Single Image Ken Burns Logic
-          const progress = frame / totalFrames;
-          
-          // Smooth Zoom: Start at 1.0, end at 1.15
-          const scale = 1.0 + (0.15 * progress);
-          
-          // Gentle Pan: Shift slightly from center
-          const panX = -20 * progress;
+          const t = frame / totalFrames;
+          const smoothT = t * t * (3 - 2 * t); 
+
+          const scale = 1.0 + (0.1 * smoothT);
+          const panY = 0 - (10 * smoothT);
 
           const imgAspect = img.width / img.height;
           const canvasAspect = width / height;
           let drawW, drawH, offsetX, offsetY;
 
-          // Calculate "Cover" fit
           if (imgAspect > canvasAspect) {
             drawH = height * scale;
             drawW = drawH * imgAspect;
-            offsetX = (width - drawW) / 2 + panX;
-            offsetY = (height - drawH) / 2;
+            offsetX = (width - drawW) / 2;
+            offsetY = ((height - drawH) / 2) + panY;
           } else {
             drawW = width * scale;
             drawH = drawW / imgAspect;
-            offsetX = (width - drawW) / 2 + panX;
-            offsetY = (height - drawH) / 2;
+            offsetX = (width - drawW) / 2;
+            offsetY = ((height - drawH) / 2) + panY;
           }
 
           ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
 
-          // Flash effect only at the very start
-          if (frame < 5) {
-              ctx.fillStyle = `rgba(255, 255, 255, ${1 - (frame/5)})`;
+          // "Flash" overlay at start
+          if (frame < 4) {
+              ctx.fillStyle = `rgba(255, 255, 255, ${0.8 - (frame * 0.2)})`;
               ctx.fillRect(0,0, width, height);
           }
-          
-          // NO WATERMARK - removed the text overlay
 
           frame++;
           requestAnimationFrame(animate);
         };
 
         animate();
+
     } catch (err) {
         console.error("Video generation error:", err);
-        setErrorMsg("Could not generate video on this device.");
+        setErrorMsg(`Video failed: ${err.message}`);
         setIsVideoGenerating(false);
     }
   };
@@ -267,13 +325,15 @@ export default function LuminaApp() {
     if (!videoUrl) return;
     const a = document.createElement('a');
     a.href = videoUrl;
-    a.download = 'lumina-glamcam.webm';
+    const ext = videoUrl.includes('mp4') ? 'mp4' : 'webm';
+    a.download = `lumina-glamcam.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
   };
 
   const handleDownloadImage = (src, index) => {
+    if (!src) return;
     const a = document.createElement('a');
     a.href = src;
     a.download = `lumina-editorial-${index + 1}.jpg`;
@@ -286,9 +346,8 @@ export default function LuminaApp() {
     if (navigator.share && videoUrl) {
       try {
         const blob = await fetch(videoUrl).then(r => r.blob());
-        const type = blob.type.includes('mp4') ? 'mp4' : 'webm';
-        const file = new File([blob], `lumina-glamcam.${type}`, { type: blob.type });
-        
+        const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+        const file = new File([blob], `lumina-glamcam.${ext}`, { type: blob.type });
         await navigator.share({
           title: 'My LUMINA Edit',
           text: 'Check out my AI-generated fashion shoot!',
@@ -342,6 +401,10 @@ export default function LuminaApp() {
             </h1>
             <p className="text-zinc-400 mb-12 max-w-md text-lg">
               Upload a selfie. Our AI will style you into a high-fashion photoshoot and generate a dynamic moving video.
+              <br/>
+              <span className='text-xs text-zinc-500 mt-2 block'>
+                (Optimized for speed: Your input image will be resized before AI processing.)
+              </span>
             </p>
 
             <div className="relative group w-full max-w-md aspect-[4/5] md:aspect-video rounded-2xl border-2 border-dashed border-zinc-700 hover:border-pink-500 transition-colors bg-zinc-900/50 flex flex-col items-center justify-center overflow-hidden cursor-pointer">
@@ -369,7 +432,7 @@ export default function LuminaApp() {
               ></div>
             </div>
             <h2 className="text-2xl font-serif font-bold mb-2">Developing Films</h2>
-            <p className="text-zinc-400 animate-pulse">Applying studio lighting and posing...</p>
+            <p className="text-zinc-400 animate-pulse">Running 4 parallel image generations...</p>
             
             <div className="w-full max-w-xs mt-8 bg-zinc-900 h-1 rounded-full overflow-hidden">
               <div 
@@ -390,12 +453,13 @@ export default function LuminaApp() {
               </div>
             )}
 
+            {/* Video Showcase */}
             <div className="w-full bg-zinc-900 rounded-2xl overflow-hidden shadow-2xl shadow-pink-500/10 border border-zinc-800">
               <div className="p-6 border-b border-zinc-800 flex justify-between items-center">
                 <h3 className="font-serif text-xl">Strike a Pose</h3>
                 {isVideoGenerating && (
                    <span className="flex items-center gap-2 text-xs text-pink-500 uppercase tracking-wider">
-                     <Loader2 className="w-3 h-3 animate-spin" /> Rendering Video
+                     <Loader2 className="w-3 h-3 animate-spin" /> Rendering {renderingProgress}%
                    </span>
                 )}
               </div>
@@ -410,9 +474,10 @@ export default function LuminaApp() {
                     className="w-full h-full object-contain"
                   />
                 ) : (
-                  <div className="text-zinc-500 flex flex-col items-center">
+                  <div className="text-zinc-500 flex flex-col items-center justify-center h-full p-8 text-center">
                     <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                    <p>Rendering movement...</p>
+                    <p className="text-sm">Developing Motion...</p>
+                    <p className="text-xs text-zinc-600 mt-2">Please wait while we animate your photo.</p>
                   </div>
                 )}
               </div>
@@ -434,6 +499,7 @@ export default function LuminaApp() {
               </div>
             </div>
 
+            {/* Photo Grid */}
             <div>
               <h3 className="font-serif text-xl mb-4 pl-2 border-l-4 border-pink-500">Editorial Prints ({generatedImages.length})</h3>
               <div className="grid grid-cols-2 gap-4">
@@ -465,6 +531,7 @@ export default function LuminaApp() {
         )}
       </main>
 
+      {/* Footer */}
       <footer className="py-8 text-center text-zinc-600 text-sm">
         <p>POWERED BY GEMINI 2.5 • LUMINA STUDIOS © 2025</p>
       </footer>
