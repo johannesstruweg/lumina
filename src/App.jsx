@@ -27,7 +27,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
     Transform this person into a high-fashion editorial magazine shot.
     Style: Vogue-style photography, 8k resolution, dramatic studio lighting, photorealistic, sharp focus.
     Pose: ${posePrompt}
-    Keep the person's facial features recognizable but stylized.
+    Keep the person's facial features very recognizable but stylized.
     Background: Minimalist luxury studio or blurred city bokeh.
     
     CRITICAL: Generate ONLY the photograph with NO text, NO watermarks, NO labels, NO words anywhere in the image.
@@ -77,8 +77,8 @@ const generateEditorialVideo = async (base64Image) => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
   
   const videoPrompt = `
-    Create a 4-second cinematic fashion video of this person.
-    Style: High-fashion runway video, smooth camera movement, professional lighting.
+    Create a 4-second cinematic video of this person.
+    Style: Close-up interview style, smooth camera movement, professional lighting.
     Motion: The model should move naturally - subtle head turn, hair movement, slight body sway, confident pose transitions.
     Camera: Smooth slow zoom in, slight parallax effect, cinematic framing.
     Keep the person recognizable and make the movement elegant and editorial.
