@@ -14,7 +14,7 @@ const fileToBase64 = (file) => {
   });
 };
 
-// --- Helper: Gemini Image Generation (UPDATED - NO TEXT) ---
+// --- Helper: Gemini Image Generation (NO TEXT) ---
 const generateEditorialImage = async (base64Image, posePrompt) => {
   if (!apiKey) {
     console.error("API Key missing. Please check .env file.");
@@ -27,7 +27,7 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
     Transform this person into a high-fashion editorial magazine shot.
     Style: Vogue-style photography, 8k resolution, dramatic studio lighting, photorealistic, sharp focus.
     Pose: ${posePrompt}
-    Keep the person's facial features very recognizable but stylized.
+    Keep the person's facial features recognizable but stylized.
     Background: Minimalist luxury studio or blurred city bokeh.
     
     CRITICAL: Generate ONLY the photograph with NO text, NO watermarks, NO labels, NO words anywhere in the image.
@@ -54,74 +54,27 @@ const generateEditorialImage = async (base64Image, posePrompt) => {
       body: JSON.stringify(payload)
     });
     
-    if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+    if (!response.ok) {
+      console.error(`API Error for pose: ${posePrompt}`, response.statusText);
+      throw new Error(`API Error: ${response.statusText}`);
+    }
     
     const data = await response.json();
     const imageBase64 = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
     
-    if (!imageBase64) throw new Error("No image generated");
+    if (!imageBase64) {
+      console.error("No image data in response for pose:", posePrompt);
+      throw new Error("No image generated");
+    }
     
     return `data:image/jpeg;base64,${imageBase64}`;
   } catch (error) {
     console.error("Generation failed:", error);
-    return null;
+    throw error; // Re-throw to handle in the calling function
   }
 };
 
-// --- Helper: Gemini VIDEO Generation (NEW - ACTUAL VIDEO) ---
-const generateEditorialVideo = async (base64Image) => {
-  if (!apiKey) {
-    throw new Error("API Key missing");
-  }
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
-  
-  const videoPrompt = `
-    Create a 4-second cinematic video of this person.
-    Style: Close-up interview style, smooth camera movement, professional lighting.
-    Motion: The model should move naturally - subtle head turn, hair movement, slight body sway, confident pose transitions.
-    Camera: Smooth slow zoom in, slight parallax effect, cinematic framing.
-    Keep the person recognizable and make the movement elegant and editorial.
-    Background: Luxury studio with soft lighting or elegant minimalist setting.
-    
-    CRITICAL: Generate ONLY the video with NO text, NO watermarks, NO labels, NO words anywhere in the video.
-  `;
-
-  const payload = {
-    contents: [{
-      parts: [
-        { text: videoPrompt },
-        { inlineData: { mimeType: "image/jpeg", data: base64Image } }
-      ]
-    }],
-    generationConfig: {
-      responseModalities: ['VIDEO'],
-      temperature: 0.9 
-    }
-  };
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    
-    if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
-    
-    const data = await response.json();
-    const videoBase64 = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-    
-    if (!videoBase64) throw new Error("No video generated");
-    
-    return `data:video/mp4;base64,${videoBase64}`;
-  } catch (error) {
-    console.error("Video generation failed:", error);
-    return null;
-  }
-};
-
-// --- Styles & Poses ---
+// --- Styles & Poses (4 poses) ---
 const POSES = [
   "Close-up beauty shot, hands framing the face, intense gaze, soft lighting.",
   "Full body power pose, walking towards camera, wind in hair, low angle shot.",
@@ -160,53 +113,153 @@ export default function LuminaApp() {
        setStep('upload');
        return;
     }
-    setLoadingProgress(10);
-    const results = [];
     
+    setLoadingProgress(5);
+    const results = [];
+    const progressPerImage = 90 / POSES.length; // 90% for images, 10% for video prep
+    
+    // Generate all 4 images
     for (let i = 0; i < POSES.length; i++) {
       try {
+        console.log(`Generating image ${i + 1} of ${POSES.length}...`);
         const result = await generateEditorialImage(base64Input, POSES[i]);
         if (result) {
           results.push(result);
+          console.log(`Image ${i + 1} generated successfully`);
         }
-        setLoadingProgress((prev) => prev + 20);
+        setLoadingProgress((prev) => Math.min(prev + progressPerImage, 95));
       } catch (err) {
-        console.error(err);
+        console.error(`Failed to generate image ${i + 1}:`, err);
+        // Continue with other images even if one fails
       }
     }
 
     if (results.length === 0) {
-      setErrorMsg("Failed to generate images. Please try again.");
+      setErrorMsg("Failed to generate any images. Please try again.");
       setStep('upload');
       return;
     }
 
+    console.log(`Successfully generated ${results.length} of ${POSES.length} images`);
+    
     setGeneratedImages(results);
     setLoadingProgress(100);
     
-    // Generate actual video using Gemini's video generation
-    generateGlamCamVideo(base64Input);
+    // Generate video using the first image
+    if (results.length > 0) {
+      generateGlamCamVideo(results[0]);
+    }
     setStep('results');
   };
 
-  // UPDATED: Now uses Gemini to generate actual video with movement
-  const generateGlamCamVideo = async (base64Input) => {
+  // UPDATED: Ken Burns effect WITHOUT watermark
+  const generateGlamCamVideo = async (imageSrc) => {
     setIsVideoGenerating(true);
     
     try {
-      const videoData = await generateEditorialVideo(base64Input);
-      
-      if (videoData) {
-        setVideoUrl(videoData);
-      } else {
-        setErrorMsg("Could not generate video. The feature may not be available yet.");
-      }
-      
-      setIsVideoGenerating(false);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 720;
+        const height = 1280; 
+        canvas.width = width;
+        canvas.height = height;
+
+        // Load the single image
+        const img = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.crossOrigin = "anonymous";
+          image.onload = () => resolve(image);
+          image.onerror = (e) => reject(e);
+          image.src = imageSrc;
+        });
+
+        // Browser Compatibility Check for Video
+        const mimeTypes = [
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm',
+            'video/mp4'
+        ];
+        const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'video/webm';
+
+        const stream = canvas.captureStream(30); // 30 FPS
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
+        const chunks = [];
+        
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: selectedMimeType });
+          const url = URL.createObjectURL(blob);
+          setVideoUrl(url);
+          setIsVideoGenerating(false);
+        };
+
+        mediaRecorder.start();
+
+        // Animation Constants for SINGLE IMAGE
+        const fps = 30;
+        const durationSeconds = 4; 
+        const totalFrames = fps * durationSeconds;
+        let frame = 0;
+
+        const animate = () => {
+          if (frame >= totalFrames) {
+            mediaRecorder.stop();
+            return;
+          }
+
+          // Clear
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, width, height);
+
+          // Single Image Ken Burns Logic
+          const progress = frame / totalFrames;
+          
+          // Smooth Zoom: Start at 1.0, end at 1.15
+          const scale = 1.0 + (0.15 * progress);
+          
+          // Gentle Pan: Shift slightly from center
+          const panX = -20 * progress;
+
+          const imgAspect = img.width / img.height;
+          const canvasAspect = width / height;
+          let drawW, drawH, offsetX, offsetY;
+
+          // Calculate "Cover" fit
+          if (imgAspect > canvasAspect) {
+            drawH = height * scale;
+            drawW = drawH * imgAspect;
+            offsetX = (width - drawW) / 2 + panX;
+            offsetY = (height - drawH) / 2;
+          } else {
+            drawW = width * scale;
+            drawH = drawW / imgAspect;
+            offsetX = (width - drawW) / 2 + panX;
+            offsetY = (height - drawH) / 2;
+          }
+
+          ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+
+          // Flash effect only at the very start
+          if (frame < 5) {
+              ctx.fillStyle = `rgba(255, 255, 255, ${1 - (frame/5)})`;
+              ctx.fillRect(0,0, width, height);
+          }
+          
+          // NO WATERMARK - removed the text overlay
+
+          frame++;
+          requestAnimationFrame(animate);
+        };
+
+        animate();
     } catch (err) {
-      console.error("Video generation error:", err);
-      setErrorMsg("Video generation is not yet available in Gemini API.");
-      setIsVideoGenerating(false);
+        console.error("Video generation error:", err);
+        setErrorMsg("Could not generate video on this device.");
+        setIsVideoGenerating(false);
     }
   };
 
@@ -214,7 +267,7 @@ export default function LuminaApp() {
     if (!videoUrl) return;
     const a = document.createElement('a');
     a.href = videoUrl;
-    a.download = 'lumina-glamcam.mp4';
+    a.download = 'lumina-glamcam.webm';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -233,7 +286,8 @@ export default function LuminaApp() {
     if (navigator.share && videoUrl) {
       try {
         const blob = await fetch(videoUrl).then(r => r.blob());
-        const file = new File([blob], 'lumina-glamcam.mp4', { type: 'video/mp4' });
+        const type = blob.type.includes('mp4') ? 'mp4' : 'webm';
+        const file = new File([blob], `lumina-glamcam.${type}`, { type: blob.type });
         
         await navigator.share({
           title: 'My LUMINA Edit',
@@ -260,7 +314,7 @@ export default function LuminaApp() {
           </div>
           {step === 'results' && (
             <button 
-              onClick={() => { setStep('upload'); setGeneratedImages([]); setVideoUrl(null); }}
+              onClick={() => { setStep('upload'); setGeneratedImages([]); setVideoUrl(null); setErrorMsg(""); }}
               className="text-xs uppercase tracking-widest hover:text-pink-500 transition-colors"
             >
               New Shoot
@@ -287,7 +341,7 @@ export default function LuminaApp() {
               </span>
             </h1>
             <p className="text-zinc-400 mb-12 max-w-md text-lg">
-              Upload a selfie. Our AI will style you into a high-fashion photoshoot and generate a dynamic GlamCam video.
+              Upload a selfie. Our AI will style you into a high-fashion photoshoot and generate a dynamic moving video.
             </p>
 
             <div className="relative group w-full max-w-md aspect-[4/5] md:aspect-video rounded-2xl border-2 border-dashed border-zinc-700 hover:border-pink-500 transition-colors bg-zinc-900/50 flex flex-col items-center justify-center overflow-hidden cursor-pointer">
@@ -323,16 +377,22 @@ export default function LuminaApp() {
                 style={{ width: `${loadingProgress}%` }}
               ></div>
             </div>
-            <p className="mt-2 text-xs text-zinc-600 font-mono">{loadingProgress}% COMPLETE</p>
+            <p className="mt-2 text-xs text-zinc-600 font-mono">{loadingProgress.toFixed(0)}% COMPLETE</p>
           </div>
         )}
 
         {step === 'results' && (
           <div className="flex flex-col gap-8 animate-in slide-in-from-bottom-8 duration-700">
             
+            {generatedImages.length < POSES.length && (
+              <div className="p-4 bg-yellow-500/10 border border-yellow-500/50 rounded-lg text-yellow-200 text-sm">
+                Note: Generated {generatedImages.length} of {POSES.length} images. Some images failed to generate.
+              </div>
+            )}
+
             <div className="w-full bg-zinc-900 rounded-2xl overflow-hidden shadow-2xl shadow-pink-500/10 border border-zinc-800">
               <div className="p-6 border-b border-zinc-800 flex justify-between items-center">
-                <h3 className="font-serif text-xl">The GlamCam</h3>
+                <h3 className="font-serif text-xl">Strike a Pose</h3>
                 {isVideoGenerating && (
                    <span className="flex items-center gap-2 text-xs text-pink-500 uppercase tracking-wider">
                      <Loader2 className="w-3 h-3 animate-spin" /> Rendering Video
@@ -352,7 +412,7 @@ export default function LuminaApp() {
                 ) : (
                   <div className="text-zinc-500 flex flex-col items-center">
                     <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                    <p>Generating video with AI...</p>
+                    <p>Rendering movement...</p>
                   </div>
                 )}
               </div>
@@ -375,7 +435,7 @@ export default function LuminaApp() {
             </div>
 
             <div>
-              <h3 className="font-serif text-xl mb-4 pl-2 border-l-4 border-pink-500">Editorial Prints</h3>
+              <h3 className="font-serif text-xl mb-4 pl-2 border-l-4 border-pink-500">Editorial Prints ({generatedImages.length})</h3>
               <div className="grid grid-cols-2 gap-4">
                 {generatedImages.map((src, idx) => (
                   <div key={idx} className="group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden shadow-lg border border-zinc-800/50 hover:border-pink-500/50 transition-all">
